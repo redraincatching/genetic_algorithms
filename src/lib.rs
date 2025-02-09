@@ -10,10 +10,13 @@ where Self: Sized + Clone {
     /// randomised change
     fn mutation(&self) -> Self;
     /// generate a new randomised version of itself, for populating empty generation
-    fn random() -> Self;
+    fn random() -> Self 
+        {unimplemented!()}
     /// calculate the fitness of this solution
     fn fitness(&self) -> f64;
 }
+
+
 
 /// Each individual generation 
 #[derive(Debug)]
@@ -63,6 +66,14 @@ impl<T: Genotype + std::fmt::Debug> Generation<T> {
         });
         self.population.first().unwrap().fitness()
     }
+
+    pub fn get_population_size(&self) -> usize {
+        self.population_size
+    }
+
+    pub fn push(&mut self, item: T) {
+        self.population.push(item);
+    }
 }
 
 /// initialise with random, unseeded population
@@ -73,19 +84,28 @@ pub fn initialise<T: Genotype + std::fmt::Debug>(gen: &mut Generation<T>) {
 }
 
 /// head-to-head tournament selection based on fitness
-fn tournament_selection<T: Genotype>(solutions: &[T]) -> T {
+fn tournament_selection<T: Genotype>(solutions: &[T], order: &FitnessOrder) -> T {
     let mut rng = thread_rng(); 
     let s0_index = rng.gen_range(0..solutions.len());
     let s1_index = rng.gen_range(0..solutions.len());
 
-    if solutions.get(s0_index).unwrap().fitness() > solutions.get(s1_index).unwrap().fitness() {
+    if 
+        (*order == FitnessOrder::Max 
+            && solutions.get(s0_index).unwrap().fitness() > solutions.get(s1_index).unwrap().fitness()) 
+            || 
+        (*order == FitnessOrder::Min 
+            && solutions.get(s0_index).unwrap().fitness() < solutions.get(s1_index).unwrap().fitness()) {
         solutions.get(s0_index).unwrap().clone()
     } else {
         solutions.get(s1_index).unwrap().clone()
     }
 }
 
-pub fn epoch<T: Genotype + std::fmt::Debug>(gen: &mut Generation<T>) {
+// enum to determine how to determine whether we want max or min fitness
+#[derive(PartialEq)]
+pub enum FitnessOrder {Max, Min}
+
+pub fn epoch<T: Genotype + std::fmt::Debug>(gen: &mut Generation<T>, order: FitnessOrder) {
     let mut rng = thread_rng();
 
     // get average fitness of generation
@@ -95,30 +115,40 @@ pub fn epoch<T: Genotype + std::fmt::Debug>(gen: &mut Generation<T>) {
     }
     fitness /= gen.population_size as f64;
     gen.average_fitness = fitness;
-    //println!("current average fitness: {}", gen.average_fitness);
 
-    // sort by fitness (in descending order)
-    gen.population.sort_by(|a, b| {
-        if a.fitness() > b.fitness() {
-            Ordering::Less
-        } else if a.fitness() < b.fitness() {
-            Ordering::Greater
-        } else {
-            Ordering::Equal
-        }
-    });
-
-    //println!("current best solution: {:?}", gen.population.first());
+    if order == FitnessOrder::Max {
+        // sort by fitness (in descending order)
+        gen.population.sort_by(|a, b| {
+            if a.fitness() > b.fitness() {
+                Ordering::Less
+            } else if a.fitness() < b.fitness() {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        });
+    } else {
+        // sort by fitness (in ascending order)
+        gen.population.sort_by(|a, b| {
+            if a.fitness() < b.fitness() {
+                Ordering::Less
+            } else if a.fitness() > b.fitness() {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        });
+    }
 
     // keep best n solutions
-    let best_n = 2;     // currently just keeping the top 2
+    let best_n = 5;     // currently just keeping the top 2
     for i in 0..best_n {
         gen.temp_population.push(gen.population.get(i).unwrap().clone());
     }
 
     // set temp_pop from n to population_size with 2-element tournaments
     for _ in best_n..gen.population_size {
-        gen.temp_population.push(tournament_selection(&gen.population));
+        gen.temp_population.push(tournament_selection(&gen.population, &order));
     }
 
     // clear out old population
@@ -141,3 +171,5 @@ pub fn epoch<T: Genotype + std::fmt::Debug>(gen: &mut Generation<T>) {
     // clear temp pop for next epoch
     gen.temp_population.clear();
 }
+
+// TODO: grid search function
