@@ -139,7 +139,7 @@ pub fn epoch<T: Genotype + std::fmt::Debug + Sync + Send>(gen: &mut Generation<T
     }
 
     // keep best n solutions
-    let best_n = 5;     // currently just keeping the top 2
+    let best_n = 2;     // currently just keeping the top 2
     for i in 0..best_n {
         gen.temp_population.push(gen.population.get(i).unwrap().clone());
     }

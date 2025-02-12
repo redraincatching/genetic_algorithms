@@ -11,8 +11,7 @@
 /// - SM
 /// see mutation operators by ABDOUN, ABOUCHABAKA, TAJANI
 
-use std::time::Instant;
-use std::{collections::HashSet, error::Error};
+use std::{collections::HashSet, error::Error, time::Instant, slice::Iter};
 use std::sync::Arc;
 use bimap::BiMap;
 use rand::{thread_rng, Rng};
@@ -21,15 +20,48 @@ use csv::Writer;
 use tspf::{self, Tsp, TspBuilder};
 use genetic_algorithms::{epoch, FitnessOrder, Generation, Genotype};
 
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug, Clone)]
+pub enum CrossoverOperator {
+    PMX,
+    OX,
+    All
+}
+
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug, Clone)]
+pub enum MutationOperator {
+    RSM,
+    PSM,
+    SM,
+    All
+}
+
+impl CrossoverOperator {
+    pub fn iterator() -> Iter<'static, CrossoverOperator> {
+        static OPERATORS: [CrossoverOperator; 3] = [CrossoverOperator::PMX, CrossoverOperator::OX, CrossoverOperator::All];
+        OPERATORS.iter()
+    }
+}
+
+impl MutationOperator {
+    pub fn iterator() -> Iter<'static, MutationOperator> {
+        static OPERATORS: [MutationOperator; 4] = [MutationOperator::RSM, MutationOperator::PSM, MutationOperator::SM, MutationOperator::All];
+        OPERATORS.iter()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TSPath {
     data: Arc<Tsp>,
     path: Vec<usize>,
-    mutation_rate: f64
+    mutation_rate: f64,
+    crossover: CrossoverOperator,
+    mutator: MutationOperator
 }
 
 impl TSPath {
-    pub fn new(dataset: Arc<Tsp>, mutation_rate: f64) -> Self {
+    pub fn new(dataset: Arc<Tsp>, mutation_rate: f64, crossover: CrossoverOperator, mutator: MutationOperator) -> Self {
         let nodes = dataset.node_coords();
         let mut keys: Vec<usize> = nodes.keys().cloned().collect();
 
@@ -41,7 +73,9 @@ impl TSPath {
         TSPath {
             data : dataset.clone(),
             path : keys,
-            mutation_rate
+            mutation_rate,
+            crossover,
+            mutator
         }
     }
 
@@ -49,8 +83,16 @@ impl TSPath {
         self.path.len()
     }
 
-    pub fn get_path(&self) -> Vec<usize> {
-        self.path.clone()
+    pub fn get_path(&self) -> &Vec<usize> {
+        &self.path
+    }
+
+    pub fn get_crossover(&self) -> &CrossoverOperator {
+        &self.crossover
+    }
+
+    pub fn get_mutator(&self) -> &MutationOperator {
+        &self.mutator
     }
 }
 
@@ -59,10 +101,20 @@ impl Genotype for TSPath {
         let mut rng = thread_rng();
 
         // choose which crossover operator with equal chance of either
-        if rng.gen_bool(0.5) {
-            partially_mapped_crossover(x, y)
-        } else {
-            order_crossover(x, y)
+        match x.get_crossover() {
+            CrossoverOperator::OX => {
+                partially_mapped_crossover(x, y)
+            },
+            CrossoverOperator::PMX => {
+                order_crossover(x, y)
+            },
+            _ => {
+                if rng.gen_bool(0.5) {
+                    partially_mapped_crossover(x, y)
+                } else {
+                    order_crossover(x, y)
+                }
+            }
         }
     }
 
@@ -72,15 +124,31 @@ impl Genotype for TSPath {
         // check that mutation will occur
         if rng.gen::<f64>() < self.mutation_rate {
             // choose which mutation operation occurs
-            // probabilities weighted in order of increasing destructiveness
-            let operator = rng.gen_range(1..=100);
-            if operator <= 25 {
-                return swap_mutation(self)
-            } else if operator <= 75 {
-                return reverse_sequence_mutation(self)
-            } else {
-                return partial_shuffle_mutation(self)
+
+            match self.get_mutator() {
+                MutationOperator::SM => {
+                    return swap_mutation(self)
+                },
+                MutationOperator::RSM => {
+                    return reverse_sequence_mutation(self)
+                },
+                MutationOperator::PSM => {
+                    return partial_shuffle_mutation(self)
+                },
+                _ => {
+                    // probabilities weighted in order of increasing destructiveness
+                    let operator = rng.gen_range(1..=100);
+                    if operator <= 25 {
+                        return swap_mutation(self)
+                    } else if operator <= 75 {
+                        return reverse_sequence_mutation(self)
+                    } else {
+                        return partial_shuffle_mutation(self)
+                    }
+
+                }
             }
+
         }
 
         self.clone()
@@ -125,9 +193,9 @@ pub fn read_tsp_file(filename: &str) -> Option<Tsp> {
 }
 
 /// initialise with predetermined dataset and values
-pub fn initialise_with_values(gen: &mut Generation<TSPath>, dataset: Arc<Tsp>, mutation_rate: f64) {
+pub fn initialise_with_values(gen: &mut Generation<TSPath>, dataset: Arc<Tsp>, mutation_rate: f64, crossover: CrossoverOperator, mutator: MutationOperator) {
     for _ in 0..gen.get_population_size() {
-        gen.push(TSPath::new(dataset.clone(), mutation_rate));
+        gen.push(TSPath::new(dataset.clone(), mutation_rate, crossover.clone(), mutator.clone()));
     }
 }
 
@@ -142,9 +210,12 @@ fn partial_shuffle_mutation(parent: &TSPath) -> TSPath {
     let mut rng = thread_rng();
     let mut child = (*parent).clone();
 
-    for i in 0..parent.length() {
-        let j = rng.gen_range(i..parent.length());
-        child.path.swap(i, j);
+    let i = rng.gen_range(0..parent.length() - 1);
+    let j = rng.gen_range(i..parent.length());
+
+    if i != j {
+        let slice = &mut child.path[i..=j];
+        slice.shuffle(&mut rng);
     }
 
     child
@@ -322,37 +393,42 @@ pub fn analyse_dataset(filepath: &str) -> Result<(), Box<dyn Error>> {
 
     let start = Instant::now();
     
-    for step in (1..=7).step_by(1) {
-        let mutation_rate = f64::from(step) * 0.01;
+    for crossover in CrossoverOperator::iterator() {
+        for mutator in MutationOperator::iterator() {
+            for step in (1..=7).step_by(1) {
+                let mutation_rate = f64::from(step) * 0.01;
 
-        let mut generations: usize = 0;
-        let mut lowest_found = f64::MAX;
-        let mut best_found = Vec::new();
+                let mut generations: usize = 0;
+                let mut lowest_found = f64::MAX;
+                let mut best_found = Vec::new();
 
-        let mut city: Generation<TSPath> = Generation::new(100);
-        initialise_with_values(&mut city, dataset_arc.clone(), mutation_rate);
-        
-        let mut gen_since_improvement: usize = 0;
+                let mut city: Generation<TSPath> = Generation::new(200);
+                initialise_with_values(&mut city, dataset_arc.clone(), mutation_rate, crossover.clone(), mutator.clone());
+                
+                let mut gen_since_improvement: usize = 0;
 
-        // check for convergence, and also cap it because i'm on a laptop
-        while gen_since_improvement < 500 && generations < 8000 {
-            epoch(&mut city, FitnessOrder::Min);
-            generations += 1;
-            gen_since_improvement += 1;
-            //println!("gen {}, since improvement: {}", generations, gen_since_improvement);
+                // check for convergence, and also cap it because i'm on a laptop
+                while gen_since_improvement < 300 && generations < 4000 {
+                    epoch(&mut city, FitnessOrder::Min);
+                    generations += 1;
+                    gen_since_improvement += 1;
+                    //println!("gen {}, since improvement: {}", generations, gen_since_improvement);
 
-            if city.get_best_fitness() < lowest_found {
-                lowest_found = city.get_best_fitness();
-                best_found = city.get_best_solution().get_path();
+                    if city.get_best_fitness() < lowest_found {
+                        lowest_found = city.get_best_fitness();
+                        best_found = (*city.get_best_solution().get_path()).clone();
 
-                gen_since_improvement = 0;
+                        gen_since_improvement = 0;
+                    }
+
+                    writer.write_record([mutation_rate.to_string(), generations.to_string(), city.get_best_fitness().to_string(), city.get_average_fitness().to_string()])?;
+                }
+                writer.flush()?;
+
+                println!("dataset: {} with crossover: {:?}, mutator: {:?}, and mutation rate: {}\nbest fitness: {}\nbest solution: {:?}", filename, crossover, mutator, mutation_rate, lowest_found, best_found);
             }
 
-            writer.write_record([mutation_rate.to_string(), generations.to_string(), city.get_best_fitness().to_string(), city.get_average_fitness().to_string()])?;
         }
-        writer.flush()?;
-
-        println!("dataset: {}\nbest fitness: {}\nbest solution: {:?}", filename, lowest_found, best_found);
     }
 
     let elapsed = start.elapsed();
@@ -362,13 +438,3 @@ pub fn analyse_dataset(filepath: &str) -> Result<(), Box<dyn Error>> {
 }
     // TODO: write a plotting function and run it afterwards
     // also write something to plot the best path found 
-
-    //// plot graph
-    //let output = Command::new(python_path)
-    //    .arg(plotting_script)
-    //    .arg("output/one_max.csv")
-    //    .output()?;
-    //
-    //if !output.status.success() {
-    //    eprintln!("error: {}", String::from_utf8_lossy(&output.stderr));
-    //}
