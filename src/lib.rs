@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use rayon::prelude::*;
 use rand::{thread_rng, Rng};
 
 /// # Genotype 
@@ -15,8 +16,6 @@ where Self: Sized + Clone {
     /// calculate the fitness of this solution
     fn fitness(&self) -> f64;
 }
-
-
 
 /// Each individual generation 
 #[derive(Debug)]
@@ -105,20 +104,19 @@ fn tournament_selection<T: Genotype>(solutions: &[T], order: &FitnessOrder) -> T
 #[derive(PartialEq)]
 pub enum FitnessOrder {Max, Min}
 
-pub fn epoch<T: Genotype + std::fmt::Debug>(gen: &mut Generation<T>, order: FitnessOrder) {
+pub fn epoch<T: Genotype + std::fmt::Debug + Sync + Send>(gen: &mut Generation<T>, order: FitnessOrder) {
     let mut rng = thread_rng();
 
     // get average fitness of generation
-    let mut fitness = 0.0;
-    for solution in gen.population.iter() {
-        fitness += solution.fitness(); 
-    }
+    let mut fitness: f64 = gen.population.par_iter()
+        .map(|solution| solution.fitness())
+        .sum();
     fitness /= gen.population_size as f64;
     gen.average_fitness = fitness;
 
     if order == FitnessOrder::Max {
         // sort by fitness (in descending order)
-        gen.population.sort_by(|a, b| {
+        gen.population.par_sort_by(|a, b| {
             if a.fitness() > b.fitness() {
                 Ordering::Less
             } else if a.fitness() < b.fitness() {
@@ -129,7 +127,7 @@ pub fn epoch<T: Genotype + std::fmt::Debug>(gen: &mut Generation<T>, order: Fitn
         });
     } else {
         // sort by fitness (in ascending order)
-        gen.population.sort_by(|a, b| {
+        gen.population.par_sort_by(|a, b| {
             if a.fitness() < b.fitness() {
                 Ordering::Less
             } else if a.fitness() > b.fitness() {
@@ -154,8 +152,13 @@ pub fn epoch<T: Genotype + std::fmt::Debug>(gen: &mut Generation<T>, order: Fitn
     // clear out old population
     gen.population.clear();
 
+    // stronger elitism - keep the best n solutions unchanged
+    for i in 0..best_n {
+        gen.population.push(gen.temp_population.get(i).unwrap().clone());
+    }
+
     // perform crossover on all pairs without replacement
-    for _ in 0..gen.population_size / 2 {
+    for _ in best_n..gen.population_size / 2 {
         if let (Some(parent0), Some(parent1)) = (
             gen.temp_population.get(rng.gen_range(0..gen.population_size)),
             gen.temp_population.get(rng.gen_range(0..gen.population_size))
@@ -172,4 +175,3 @@ pub fn epoch<T: Genotype + std::fmt::Debug>(gen: &mut Generation<T>, order: Fitn
     gen.temp_population.clear();
 }
 
-// TODO: grid search function

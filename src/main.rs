@@ -1,11 +1,8 @@
-use std::{error::Error, sync::Arc};
+use std::thread;
 
-use genetic_algorithms::{epoch, FitnessOrder, Generation};
-use travelling_salesman::{initialise_with_values, read_tsp_file, TSPath};
+mod travelling_salesperson;
 
-mod travelling_salesman;
-
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // TODO FOR THIS ASSIGNMENT
     // time computation
     // try variations on crossover/mutation rates and population sizes (maybe find a way to make that dynamic)
@@ -14,28 +11,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     // plot for each (both best and average against optima)
     // write up
 
-    let berlin_dataset = read_tsp_file("./datasets/berlin52.tsp").expect("no file found");
-    let berlin_arc = Arc::new(berlin_dataset);
-    
-    let mut berlin: Generation<TSPath> = Generation::new(60);
-    initialise_with_values(&mut berlin, berlin_arc.clone(), 0.05);
+    let berlin = thread::spawn(|| {
+        let _ = travelling_salesperson::analyse_dataset("./datasets/berlin52.tsp");
+    });
 
-    let mut lowest_found = f64::MAX;
-    let mut best_found = Vec::new();
+    let kro = thread::spawn(|| {
+        let _ = travelling_salesperson::analyse_dataset("./datasets/kroA100.tsp");
+    });
 
-    let mut generations: usize = 0;
-    while generations < 3000 {
-        epoch(&mut berlin, FitnessOrder::Min);
-        generations += 1;
-        println!("current average fitness: {}", berlin.get_average_fitness());
+    let pr = thread::spawn(|| {
+        let _ = travelling_salesperson::analyse_dataset("./datasets/pr1002.tsp");
+    });
 
-        if berlin.get_best_fitness() < lowest_found {
-            lowest_found = berlin.get_best_fitness();
-            best_found = berlin.get_best_solution().get_path();
-        }
-    }
-    println!("best fitness: {}", lowest_found);
-    println!("best solution: {:?}", best_found);
+    berlin.join().unwrap();
+    kro.join().unwrap();
+    pr.join().unwrap();
 
     Ok(())
 }

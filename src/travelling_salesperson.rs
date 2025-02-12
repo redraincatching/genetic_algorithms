@@ -8,20 +8,18 @@
 /// mutation operators:
 /// - RSM
 /// - PSM
+/// - SM
 /// see mutation operators by ABDOUN, ABOUCHABAKA, TAJANI
 
-// TODOS
-// add concurrency
-// precalculate distance matrix
-// maybe change mutation_rate or distribution dynamically during the process? maybe based on a fitness delta
-
-use std::collections::HashSet;
+use std::time::Instant;
+use std::{collections::HashSet, error::Error};
 use std::sync::Arc;
 use bimap::BiMap;
 use rand::{thread_rng, Rng};
 use rand::seq::SliceRandom;
+use csv::Writer;
 use tspf::{self, Tsp, TspBuilder};
-use genetic_algorithms::{Genotype, Generation};
+use genetic_algorithms::{epoch, FitnessOrder, Generation, Genotype};
 
 #[derive(Debug, Clone)]
 pub struct TSPath {
@@ -73,12 +71,15 @@ impl Genotype for TSPath {
 
         // check that mutation will occur
         if rng.gen::<f64>() < self.mutation_rate {
-            // choose which mutation operator with equal chance of either
-            if rng.gen_bool(0.05) {
-                 // this one is far more destructive so we want to hit it less often
-                return partial_shuffle_mutation(self)
-            } else {
+            // choose which mutation operation occurs
+            // probabilities weighted in order of increasing destructiveness
+            let operator = rng.gen_range(1..=100);
+            if operator <= 25 {
+                return swap_mutation(self)
+            } else if operator <= 75 {
                 return reverse_sequence_mutation(self)
+            } else {
+                return partial_shuffle_mutation(self)
             }
         }
 
@@ -91,6 +92,9 @@ impl Genotype for TSPath {
     /// 
     /// ## known optimal distances for each dataset
     /// - berlin52: 7542
+    /// - kroA100: 21282
+    /// - pr1002: 259045
+    /// see symmetric tsp
     #[allow(clippy::get_first)]
     fn fitness(&self) -> f64 {
         let mut total_distance = 0.0;
@@ -159,6 +163,22 @@ fn reverse_sequence_mutation(parent: &TSPath) -> TSPath {
     if i != j {
         let slice = &mut child.path[i..=j];
         slice.reverse();
+    }
+
+    child
+}
+
+/// # Swap Mutation (SM)
+/// does what it says on the tin
+fn swap_mutation(parent: &TSPath) -> TSPath {
+    let mut rng = thread_rng();
+    let mut child = (*parent).clone();
+
+    let i = rng.gen_range(0..parent.length());
+    let j = rng.gen_range(0..parent.length());
+
+    if i != j {
+        child.path.swap(i, j);
     }
 
     child
@@ -289,3 +309,66 @@ fn order_crossover(parent_0: &TSPath, parent_1: &TSPath) -> (TSPath, TSPath) {
 
     (child_0, child_1)
 }
+
+pub fn analyse_dataset(filepath: &str) -> Result<(), Box<dyn Error>> {
+    let dataset = read_tsp_file(filepath).expect("no file found");
+    let dataset_arc = Arc::new(dataset);
+
+    // set up csv writer
+    let filename = filepath.strip_prefix("./datasets/").unwrap();
+    let mut writer = Writer::from_path(format!("output/{}", filename)).unwrap();
+    // [IDENTIFIER, X, Y, Y_alternative]
+    writer.write_record(["mutation_rate", "epoch", "best_fitness", "average_fitness"])?;
+
+    let start = Instant::now();
+    
+    for step in (1..=7).step_by(1) {
+        let mutation_rate = f64::from(step) * 0.01;
+
+        let mut generations: usize = 0;
+        let mut lowest_found = f64::MAX;
+        let mut best_found = Vec::new();
+
+        let mut city: Generation<TSPath> = Generation::new(100);
+        initialise_with_values(&mut city, dataset_arc.clone(), mutation_rate);
+        
+        let mut gen_since_improvement: usize = 0;
+
+        // check for convergence, and also cap it because i'm on a laptop
+        while gen_since_improvement < 500 && generations < 8000 {
+            epoch(&mut city, FitnessOrder::Min);
+            generations += 1;
+            gen_since_improvement += 1;
+            //println!("gen {}, since improvement: {}", generations, gen_since_improvement);
+
+            if city.get_best_fitness() < lowest_found {
+                lowest_found = city.get_best_fitness();
+                best_found = city.get_best_solution().get_path();
+
+                gen_since_improvement = 0;
+            }
+
+            writer.write_record([mutation_rate.to_string(), generations.to_string(), city.get_best_fitness().to_string(), city.get_average_fitness().to_string()])?;
+        }
+        writer.flush()?;
+
+        println!("dataset: {}\nbest fitness: {}\nbest solution: {:?}", filename, lowest_found, best_found);
+    }
+
+    let elapsed = start.elapsed();
+    println!("time taken for {}: {:.2?}", filename, elapsed);
+
+    Ok(())
+}
+    // TODO: write a plotting function and run it afterwards
+    // also write something to plot the best path found 
+
+    //// plot graph
+    //let output = Command::new(python_path)
+    //    .arg(plotting_script)
+    //    .arg("output/one_max.csv")
+    //    .output()?;
+    //
+    //if !output.status.success() {
+    //    eprintln!("error: {}", String::from_utf8_lossy(&output.stderr));
+    //}
