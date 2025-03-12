@@ -1,3 +1,5 @@
+use core::panic;
+use std::process::Command;
 /// # Operators Used
 ///
 /// crossover operators:
@@ -11,7 +13,7 @@
 /// - SM
 /// see mutation operators by ABDOUN, ABOUCHABAKA, TAJANI
 
-use std::{collections::HashSet, error::Error, time::Instant, slice::Iter};
+use std::{collections::HashSet, error::Error, time::Instant};
 use std::sync::Arc;
 use bimap::BiMap;
 use rand::{thread_rng, Rng};
@@ -20,48 +22,16 @@ use csv::Writer;
 use tspf::{self, Tsp, TspBuilder};
 use genetic_algorithms::{epoch, FitnessOrder, Generation, Genotype};
 
-#[allow(clippy::upper_case_acronyms)]
-#[derive(Debug, Clone)]
-pub enum CrossoverOperator {
-    PMX,
-    OX,
-    All
-}
-
-#[allow(clippy::upper_case_acronyms)]
-#[derive(Debug, Clone)]
-pub enum MutationOperator {
-    RSM,
-    PSM,
-    SM,
-    All
-}
-
-impl CrossoverOperator {
-    pub fn iterator() -> Iter<'static, CrossoverOperator> {
-        static OPERATORS: [CrossoverOperator; 3] = [CrossoverOperator::PMX, CrossoverOperator::OX, CrossoverOperator::All];
-        OPERATORS.iter()
-    }
-}
-
-impl MutationOperator {
-    pub fn iterator() -> Iter<'static, MutationOperator> {
-        static OPERATORS: [MutationOperator; 4] = [MutationOperator::RSM, MutationOperator::PSM, MutationOperator::SM, MutationOperator::All];
-        OPERATORS.iter()
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct TSPath {
     data: Arc<Tsp>,
     path: Vec<usize>,
     mutation_rate: f64,
-    crossover: CrossoverOperator,
-    mutator: MutationOperator
+    crossover_rate: f64
 }
 
 impl TSPath {
-    pub fn new(dataset: Arc<Tsp>, mutation_rate: f64, crossover: CrossoverOperator, mutator: MutationOperator) -> Self {
+    pub fn new(dataset: Arc<Tsp>, mutation_rate: f64, crossover_rate: f64) -> Self {
         let nodes = dataset.node_coords();
         let mut keys: Vec<usize> = nodes.keys().cloned().collect();
 
@@ -74,8 +44,7 @@ impl TSPath {
             data : dataset.clone(),
             path : keys,
             mutation_rate,
-            crossover,
-            mutator
+            crossover_rate
         }
     }
 
@@ -86,36 +55,23 @@ impl TSPath {
     pub fn get_path(&self) -> &Vec<usize> {
         &self.path
     }
-
-    pub fn get_crossover(&self) -> &CrossoverOperator {
-        &self.crossover
-    }
-
-    pub fn get_mutator(&self) -> &MutationOperator {
-        &self.mutator
-    }
 }
 
 impl Genotype for TSPath {
     fn crossover(x: &Self, y: &Self) -> (Self, Self) {
         let mut rng = thread_rng();
 
-        // choose which crossover operator with equal chance of either
-        match x.get_crossover() {
-            CrossoverOperator::OX => {
-                partially_mapped_crossover(x, y)
-            },
-            CrossoverOperator::PMX => {
-                order_crossover(x, y)
-            },
-            _ => {
-                if rng.gen_bool(0.5) {
-                    partially_mapped_crossover(x, y)
-                } else {
-                    order_crossover(x, y)
-                }
+        // check that crossover will occur
+        if rng.gen::<f64>() < x.crossover_rate {
+            // choose which crossover operation occurs
+            if rng.gen_bool(0.5) {
+                return partially_mapped_crossover(x, y)
+            } else {
+                return order_crossover(x, y)
             }
         }
+
+        (x.clone(), y.clone())
     }
 
     fn mutation(&self) -> Self {
@@ -125,30 +81,15 @@ impl Genotype for TSPath {
         if rng.gen::<f64>() < self.mutation_rate {
             // choose which mutation operation occurs
 
-            match self.get_mutator() {
-                MutationOperator::SM => {
-                    return swap_mutation(self)
-                },
-                MutationOperator::RSM => {
-                    return reverse_sequence_mutation(self)
-                },
-                MutationOperator::PSM => {
-                    return partial_shuffle_mutation(self)
-                },
-                _ => {
-                    // probabilities weighted in order of increasing destructiveness
-                    let operator = rng.gen_range(1..=100);
-                    if operator <= 25 {
-                        return swap_mutation(self)
-                    } else if operator <= 75 {
-                        return reverse_sequence_mutation(self)
-                    } else {
-                        return partial_shuffle_mutation(self)
-                    }
-
-                }
+            // probabilities weighted in order of increasing destructiveness
+            let operator = rng.gen_range(1..=100);
+            if operator <= 25 {
+                return swap_mutation(self)
+            } else if operator <= 75 {
+                return reverse_sequence_mutation(self)
+            } else {
+                return partial_shuffle_mutation(self)
             }
-
         }
 
         self.clone()
@@ -193,9 +134,9 @@ pub fn read_tsp_file(filename: &str) -> Option<Tsp> {
 }
 
 /// initialise with predetermined dataset and values
-pub fn initialise_with_values(gen: &mut Generation<TSPath>, dataset: Arc<Tsp>, mutation_rate: f64, crossover: CrossoverOperator, mutator: MutationOperator) {
+pub fn initialise_with_values(gen: &mut Generation<TSPath>, dataset: Arc<Tsp>, mutation_rate: f64, crossover_rate: f64) {
     for _ in 0..gen.get_population_size() {
-        gen.push(TSPath::new(dataset.clone(), mutation_rate, crossover.clone(), mutator.clone()));
+        gen.push(TSPath::new(dataset.clone(), mutation_rate, crossover_rate));
     }
 }
 
@@ -256,7 +197,7 @@ fn swap_mutation(parent: &TSPath) -> TSPath {
 }
 
 // --------------------
-// Mutation Operators
+// Crossover Operators
 // --------------------
 
 /// # Partially Mapped Crossover (PMX)
@@ -381,6 +322,8 @@ fn order_crossover(parent_0: &TSPath, parent_1: &TSPath) -> (TSPath, TSPath) {
     (child_0, child_1)
 }
 
+/// anaylse the dataset and output the result to a csv file
+/// then, call the python script to plot the average fitness
 pub fn analyse_dataset(filepath: &str) -> Result<(), Box<dyn Error>> {
     let dataset = read_tsp_file(filepath).expect("no file found");
     let dataset_arc = Arc::new(dataset);
@@ -388,53 +331,112 @@ pub fn analyse_dataset(filepath: &str) -> Result<(), Box<dyn Error>> {
     // set up csv writer
     let filename = filepath.strip_prefix("./datasets/").unwrap();
     let mut writer = Writer::from_path(format!("output/{}", filename)).unwrap();
-    // [IDENTIFIER, X, Y, Y_alternative]
-    writer.write_record(["mutation_rate", "epoch", "best_fitness", "average_fitness"])?;
+    // [IDENTIFIER, IDENTIFIER_ALTERNATIVE, X, Y, Y_alternative]
+    writer.write_record(["crossover_rate", "mutation_rate", "epoch", "best_fitness", "average_fitness"])?;
 
+    let order = FitnessOrder::Min;
+
+    let mut overall_best_path = Vec::new();
+    let mut overall_best_fitness: f64 = f64::MAX;
+  
     let start = Instant::now();
-    
-    for crossover in CrossoverOperator::iterator() {
-        for mutator in MutationOperator::iterator() {
-            for step in (1..=7).step_by(1) {
-                let mutation_rate = f64::from(step) * 0.01;
 
-                let mut generations: usize = 0;
-                let mut lowest_found = f64::MAX;
-                let mut best_found = Vec::new();
+    // grid search, bounded thanks to manual testing
+    // searches crossover rate .8 to 1.0, and mutation rate 0.05 to 0.1
+    for c_step in (80..=100).step_by(10) {
+        for m_step in (5..=10).step_by(1) {
+            let crossover_rate = f64::from(c_step) * 0.01;
+            let mutation_rate = f64::from(m_step) * 0.01;
 
-                let mut city: Generation<TSPath> = Generation::new(200);
-                initialise_with_values(&mut city, dataset_arc.clone(), mutation_rate, crossover.clone(), mutator.clone());
-                
-                let mut gen_since_improvement: usize = 0;
+            let mut generations: usize = 0;
+            let mut lowest_found = f64::MAX;
+            let mut lowest_average = f64::MAX;
+            let mut best_found = Vec::new();
 
-                // check for convergence, and also cap it because i'm on a laptop
-                while gen_since_improvement < 300 && generations < 4000 {
-                    epoch(&mut city, FitnessOrder::Min);
-                    generations += 1;
-                    gen_since_improvement += 1;
-                    //println!("gen {}, since improvement: {}", generations, gen_since_improvement);
+            let mut city: Generation<TSPath> = Generation::new(200);
+            initialise_with_values(&mut city, dataset_arc.clone(), mutation_rate, crossover_rate);
+            
+            let mut gen_since_improvement: usize = 0;
 
-                    if city.get_best_fitness() < lowest_found {
-                        lowest_found = city.get_best_fitness();
-                        best_found = (*city.get_best_solution().get_path()).clone();
+            // check for convergence, and also cap it because i'm on a laptop
+            while gen_since_improvement < 400 && generations < 5000 {
+                epoch(&mut city, &order);
+                generations += 1;
+                gen_since_improvement += 1;
 
-                        gen_since_improvement = 0;
+                // check if we have a new best solution, or if the average has improved
+                // either of these means we're improving
+                if city.get_best_fitness(&order) < lowest_found {
+                    lowest_found = city.get_best_fitness(&order);
+                    best_found = (*city.get_best_solution(&order).get_path()).clone();
+
+                    // see if this is the best solution found for the dataset
+                    if lowest_found < overall_best_fitness {
+                        overall_best_fitness = lowest_found;
+                        overall_best_path = best_found.clone();
                     }
 
-                    writer.write_record([mutation_rate.to_string(), generations.to_string(), city.get_best_fitness().to_string(), city.get_average_fitness().to_string()])?;
+                    gen_since_improvement = 0;
                 }
-                writer.flush()?;
 
-                println!("dataset: {} with crossover: {:?}, mutator: {:?}, and mutation rate: {}\nbest fitness: {}\nbest solution: {:?}", filename, crossover, mutator, mutation_rate, lowest_found, best_found);
+                if city.get_average_fitness() < lowest_average {
+                    lowest_average = city.get_average_fitness();
+
+                    gen_since_improvement = 0;
+                }
+
+                // write generation to csv file
+                writer.write_record([crossover_rate.to_string(), mutation_rate.to_string(), generations.to_string(), city.get_best_fitness(&order).to_string(), city.get_average_fitness().to_string()])?;
             }
+            writer.flush()?;
 
+            println!("dataset: {} with crossover rate: {} and mutation rate: {}\nbest fitness: {}\nbest solution: {:?}", filename, crossover_rate, mutation_rate, lowest_found, best_found);
         }
     }
 
     let elapsed = start.elapsed();
     println!("time taken for {}: {:.2?}", filename, elapsed);
 
+    println!("best path found for dataset {}:\n{:?}\nfitness: {}", filename, overall_best_path, overall_best_fitness);
+
+    // python environment
+    let python_path = ".venv/bin/python3";
+    let plotting_script = "plotting/plot_tsp_fitness.py";
+    let path_script = "plotting/plot_tsp_path.py";
+
+    // plot graph
+    // best fitness
+    let best_output = Command::new(python_path)
+        .arg(plotting_script)
+        .arg(format!("output/{}", filename))
+        .arg("best_fitness")
+        .output()?;
+
+    if !best_output.status.success() {
+        eprintln!("error: {}", String::from_utf8_lossy(&best_output.stderr));
+    }
+
+    // average fitness
+    let average_output = Command::new(python_path)
+        .arg(plotting_script)
+        .arg(format!("output/{}", filename))
+        .arg("average_fitness")
+        .output()?;
+
+    if !average_output.status.success() {
+        eprintln!("error: {}", String::from_utf8_lossy(&average_output.stderr));
+    }
+
+    // plot path
+    let path_output = Command::new(python_path)
+        .arg(path_script)
+        .arg(format!("datasets/{}", filename))
+        .arg(format!("{:?}", overall_best_path))
+        .output()?;
+
+    if !path_output.status.success() {
+        eprintln!("error: {}", String::from_utf8_lossy(&path_output.stderr));
+    }
+
     Ok(())
 }
-    // TODO: write a plotting function and run it afterwards
-    // also write something to plot the best path found 

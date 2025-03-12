@@ -11,16 +11,17 @@ where Self: Sized + Clone {
     /// randomised change
     fn mutation(&self) -> Self;
     /// generate a new randomised version of itself, for populating empty generation
+    /// this is actually irrelvant here, it made more sense in the exercise sheet scenarios
     fn random() -> Self 
-        {unimplemented!()}
+        {unimplemented!()}  
     /// calculate the fitness of this solution
     fn fitness(&self) -> f64;
 }
 
-/// Each individual generation 
+/// Each individual generation, stored as a struct
 #[derive(Debug)]
 pub struct Generation<T: Genotype + std::fmt::Debug> {
-    population: Vec<T>,
+    pub population: Vec<T>,
     temp_population: Vec<T>,
     average_fitness: f64,
     population_size: usize
@@ -40,29 +41,57 @@ impl<T: Genotype + std::fmt::Debug> Generation<T> {
         self.average_fitness
     }
 
-    pub fn get_best_solution(&mut self) -> T {
-        self.population.sort_by(|a, b| {
-            if a.fitness() > b.fitness() {
-                Ordering::Less
-            } else if a.fitness() < b.fitness() {
-                Ordering::Greater
-            } else {
-                Ordering::Equal
-            }
-        });
+    pub fn get_best_solution(&mut self, order: &FitnessOrder) -> T {
+        if *order == FitnessOrder::Max {
+            // sort by fitness (in descending order)
+            self.population.sort_by(|a, b| {
+                if a.fitness() > b.fitness() {
+                    Ordering::Less
+                } else if a.fitness() < b.fitness() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            });
+        } else {
+            // sort by fitness (in ascending order)
+            self.population.sort_by(|a, b| {
+                if a.fitness() < b.fitness() {
+                    Ordering::Less
+                } else if a.fitness() > b.fitness() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            });
+        }
         self.population.first().unwrap().clone()
     }
 
-    pub fn get_best_fitness(&mut self) -> f64 {
-        self.population.sort_by(|a, b| {
-            if a.fitness() > b.fitness() {
-                Ordering::Less
-            } else if a.fitness() < b.fitness() {
-                Ordering::Greater
-            } else {
-                Ordering::Equal
-            }
-        });
+    pub fn get_best_fitness(&mut self, order: &FitnessOrder) -> f64 {
+        if *order == FitnessOrder::Max {
+            // sort by fitness (in descending order)
+            self.population.sort_by(|a, b| {
+                if a.fitness() > b.fitness() {
+                    Ordering::Less
+                } else if a.fitness() < b.fitness() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            });
+        } else {
+            // sort by fitness (in ascending order)
+            self.population.sort_by(|a, b| {
+                if a.fitness() < b.fitness() {
+                    Ordering::Less
+                } else if a.fitness() > b.fitness() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            });
+        }
         self.population.first().unwrap().fitness()
     }
 
@@ -82,12 +111,17 @@ pub fn initialise<T: Genotype + std::fmt::Debug>(gen: &mut Generation<T>) {
     }
 }
 
+// enum to determine how to determine whether we want max or min fitness
+#[derive(PartialEq)]
+pub enum FitnessOrder {Max, Min}
+
 /// head-to-head tournament selection based on fitness
 fn tournament_selection<T: Genotype>(solutions: &[T], order: &FitnessOrder) -> T {
     let mut rng = thread_rng(); 
     let s0_index = rng.gen_range(0..solutions.len());
     let s1_index = rng.gen_range(0..solutions.len());
 
+    // if order == max return higher fitness, if min return lower fitness
     if 
         (*order == FitnessOrder::Max 
             && solutions.get(s0_index).unwrap().fitness() > solutions.get(s1_index).unwrap().fitness()) 
@@ -100,21 +134,12 @@ fn tournament_selection<T: Genotype>(solutions: &[T], order: &FitnessOrder) -> T
     }
 }
 
-// enum to determine how to determine whether we want max or min fitness
-#[derive(PartialEq)]
-pub enum FitnessOrder {Max, Min}
-
-pub fn epoch<T: Genotype + std::fmt::Debug + Sync + Send>(gen: &mut Generation<T>, order: FitnessOrder) {
+pub fn epoch<T: Genotype + std::fmt::Debug + Sync + Send>(gen: &mut Generation<T>, order: &FitnessOrder) {
     let mut rng = thread_rng();
 
-    // get average fitness of generation
-    let mut fitness: f64 = gen.population.par_iter()
-        .map(|solution| solution.fitness())
-        .sum();
-    fitness /= gen.population_size as f64;
-    gen.average_fitness = fitness;
-
-    if order == FitnessOrder::Max {
+    // determine sorted order, whether low to high fitness (min) or high to low (max)
+    // done this way so that solution at index 0 is most fit
+    if *order == FitnessOrder::Max {
         // sort by fitness (in descending order)
         gen.population.par_sort_by(|a, b| {
             if a.fitness() > b.fitness() {
@@ -146,7 +171,7 @@ pub fn epoch<T: Genotype + std::fmt::Debug + Sync + Send>(gen: &mut Generation<T
 
     // set temp_pop from n to population_size with 2-element tournaments
     for _ in best_n..gen.population_size {
-        gen.temp_population.push(tournament_selection(&gen.population, &order));
+        gen.temp_population.push(tournament_selection(&gen.population, order));
     }
 
     // clear out old population
@@ -158,7 +183,7 @@ pub fn epoch<T: Genotype + std::fmt::Debug + Sync + Send>(gen: &mut Generation<T
     }
 
     // perform crossover on all pairs without replacement
-    for _ in best_n..gen.population_size / 2 {
+    for _ in best_n..=gen.population_size / 2 {
         if let (Some(parent0), Some(parent1)) = (
             gen.temp_population.get(rng.gen_range(0..gen.population_size)),
             gen.temp_population.get(rng.gen_range(0..gen.population_size))
@@ -173,5 +198,11 @@ pub fn epoch<T: Genotype + std::fmt::Debug + Sync + Send>(gen: &mut Generation<T
 
     // clear temp pop for next epoch
     gen.temp_population.clear();
-}
 
+    // get average fitness of generation
+    let mut fitness: f64 = gen.population.par_iter()
+        .map(|solution| solution.fitness())
+        .sum();
+    fitness /= gen.population_size as f64;
+    gen.average_fitness = fitness;
+}
