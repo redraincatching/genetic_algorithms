@@ -1,5 +1,3 @@
-use core::panic;
-use std::process::Command;
 /// # Operators Used
 ///
 /// crossover operators:
@@ -18,6 +16,9 @@ use std::sync::Arc;
 use bimap::BiMap;
 use rand::{thread_rng, Rng};
 use rand::seq::SliceRandom;
+use std::process::Command;
+use std::fs::File;
+use std::io::BufWriter;
 use csv::Writer;
 use tspf::{self, Tsp, TspBuilder};
 use genetic_algorithms::{epoch, FitnessOrder, Generation, Genotype};
@@ -330,7 +331,13 @@ pub fn analyse_dataset(filepath: &str) -> Result<(), Box<dyn Error>> {
 
     // set up csv writer
     let filename = filepath.strip_prefix("./datasets/").unwrap();
-    let mut writer = Writer::from_path(format!("output/{}", filename)).unwrap();
+    let output_path = format!("output/{}", filename);
+
+    // set up buffered writer
+    let file = File::create(&output_path)?;
+    let buf_writer = BufWriter::new(file);  // Wrap in a BufWriter
+    let mut writer = Writer::from_writer(buf_writer);
+
     // [IDENTIFIER, IDENTIFIER_ALTERNATIVE, X, Y, Y_alternative]
     writer.write_record(["crossover_rate", "mutation_rate", "epoch", "best_fitness", "average_fitness"])?;
 
